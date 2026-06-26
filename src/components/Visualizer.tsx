@@ -54,7 +54,7 @@ export default function Visualizer({ isPlaying, preset, genre, volume }: Visuali
       speedFactor = 0.02;
     }
 
-    if (genre === 'Ambient') {
+    if (genre === 'Efeitos') {
       speedFactor *= 0.8;
       amplitudeFactor *= 0.9;
     }

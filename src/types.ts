@@ -6,15 +6,9 @@ export interface Track {
   duration: string; // format "MM:SS"
   url: string;
   coverUrl: string;
-  genre: 'Clássica' | 'Ambient' | 'Custom';
+  genre: 'Efeitos' | 'Custom';
   description?: string;
   lyrics?: string[];
-}
-
-export interface CustomPlaylist {
-  id: string;
-  name: string;
-  trackIds: string[];
 }
 
 export type EqualizerPreset = 'flat' | 'bass' | 'vocal' | 'classic' | 'chill';
@@ -24,3 +18,11 @@ export interface SleepTimerConfig {
   timeLeft: number; // in seconds
   duration: number; // in minutes
 }
+
+export interface Playlist {
+  id: string;
+  name: string;
+  description?: string;
+  trackIds: string[];
+}
+

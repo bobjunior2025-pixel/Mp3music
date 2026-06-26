@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Track, EqualizerPreset, SleepTimerConfig, CustomPlaylist } from './types';
+import { Track, EqualizerPreset, SleepTimerConfig, Playlist } from './types';
 import { PRELOADED_TRACKS } from './data';
 import Visualizer from './components/Visualizer';
 import SleepTimer from './components/SleepTimer';
@@ -8,6 +8,7 @@ import CurrentTrackDetail from './components/CurrentTrackDetail';
 import PlayerControls from './components/PlayerControls';
 import TrackList from './components/TrackList';
 import { Music, AlertCircle, Headphones, Volume2, Sparkles, Compass, Smartphone, Download } from 'lucide-react';
+import { saveAudioFile, deleteAudioFile } from './utils/indexedDB';
 
 export default function App() {
   // --- Persistent Storage Loading ---
@@ -15,6 +16,35 @@ export default function App() {
     const saved = localStorage.getItem('reprodutor_playlist');
     return saved ? JSON.parse(saved) : PRELOADED_TRACKS;
   });
+
+  // --- Personalized Playlists State ---
+  const [playlists, setPlaylists] = useState<Playlist[]>(() => {
+    const saved = localStorage.getItem('reprodutor_playlists');
+    return saved ? JSON.parse(saved) : [
+      {
+        id: 'playlist-chill',
+        name: 'Sons Relaxantes 🌌',
+        description: 'Sons calmos selecionados para meditação, estudo ou foco.',
+        trackIds: ['ambient-chill-1', 'ambient-chill-2']
+      }
+    ];
+  });
+
+  const [activePlaylistId, setActivePlaylistId] = useState<string | null>(() => {
+    return localStorage.getItem('reprodutor_active_playlist_id');
+  });
+
+  useEffect(() => {
+    localStorage.setItem('reprodutor_playlists', JSON.stringify(playlists));
+  }, [playlists]);
+
+  useEffect(() => {
+    if (activePlaylistId) {
+      localStorage.setItem('reprodutor_active_playlist_id', activePlaylistId);
+    } else {
+      localStorage.removeItem('reprodutor_active_playlist_id');
+    }
+  }, [activePlaylistId]);
 
   // --- PWA Installation State ---
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -82,15 +112,8 @@ export default function App() {
   const [loopMode, setLoopMode] = useState<'none' | 'one' | 'all'>('all');
 
   // --- Filtering & Sorting ---
-  const [selectedGenre, setSelectedGenre] = useState<'Todos' | 'Clássica' | 'Ambient' | 'Favoritos'>('Todos');
+  const [selectedGenre, setSelectedGenre] = useState<'Todos' | 'Efeitos' | 'Favoritos'>('Todos');
   const [searchQuery, setSearchQuery] = useState('');
-
-  // --- Custom Playlists ---
-  const [customPlaylists, setCustomPlaylists] = useState<CustomPlaylist[]>(() => {
-    const saved = localStorage.getItem('reprodutor_custom_playlists');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
 
   // --- Equalizer Preset ---
   const [equalizerPreset, setEqualizerPreset] = useState<EqualizerPreset>('flat');
@@ -105,6 +128,46 @@ export default function App() {
   // --- Audio Ref ---
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // --- Restore Local Files from IndexedDB on Startup ---
+  useEffect(() => {
+    async function restoreLocalTracks() {
+      try {
+        const { getAllAudioFiles } = await import('./utils/indexedDB');
+        const savedBlobs = await getAllAudioFiles();
+        const savedBlobsKeys = Object.keys(savedBlobs);
+        
+        if (savedBlobsKeys.length === 0) return;
+
+        setPlaylist(prev => {
+          let updated = false;
+          const restored = prev.map(track => {
+            if (track.id.startsWith('local-') && savedBlobs[track.id]) {
+              const newUrl = URL.createObjectURL(savedBlobs[track.id]);
+              updated = true;
+              return { ...track, url: newUrl };
+            }
+            return track;
+          });
+
+          if (updated) {
+            // Also update currentTrack if it was a restored local track
+            const currentSavedId = localStorage.getItem('reprodutor_current_track_id');
+            const matchingTrack = restored.find(t => t.id === currentSavedId);
+            if (matchingTrack) {
+              setCurrentTrack(matchingTrack);
+            }
+            return restored;
+          }
+          return prev;
+        });
+      } catch (err) {
+        console.error('Error restoring local tracks from IndexedDB:', err);
+      }
+    }
+
+    restoreLocalTracks();
+  }, []);
+
   // --- Sync storage ---
   useEffect(() => {
     localStorage.setItem('reprodutor_playlist', JSON.stringify(playlist));
@@ -117,10 +180,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('reprodutor_current_track_id', currentTrack.id);
   }, [currentTrack]);
-
-  useEffect(() => {
-    localStorage.setItem('reprodutor_custom_playlists', JSON.stringify(customPlaylists));
-  }, [customPlaylists]);
 
   useEffect(() => {
     localStorage.setItem('reprodutor_volume', volume.toString());
@@ -246,15 +305,6 @@ export default function App() {
     };
   }, [playlist, currentTrack, isShuffle, selectedGenre, favorites]);
 
-  // --- Handle Custom Track Insertion ---
-  const handleAddCustomTrack = (newTrack: Omit<Track, 'id'>) => {
-    const trackWithId: Track = {
-      ...newTrack,
-      id: `custom-${Date.now()}`
-    };
-    setPlaylist(prev => [...prev, trackWithId]);
-  };
-
   // --- Handle local file upload with auto duration extraction ---
   const handleAddLocalFile = (file: File) => {
     const objectUrl = URL.createObjectURL(file);
@@ -280,14 +330,23 @@ export default function App() {
 
     // Create a temporary Audio element to extract the exact track duration
     const tempAudio = new Audio(objectUrl);
-    tempAudio.addEventListener('loadedmetadata', () => {
+    tempAudio.addEventListener('loadedmetadata', async () => {
       const durationSeconds = tempAudio.duration;
       const mins = Math.floor(durationSeconds / 60);
       const secs = Math.floor(durationSeconds % 60);
       const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 
+      const trackId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+
+      // Save to IndexedDB so it survives page reloads
+      try {
+        await saveAudioFile(trackId, file);
+      } catch (err) {
+        console.error('Error saving file in IndexedDB:', err);
+      }
+
       const trackWithId: Track = {
-        id: `local-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: trackId,
         title,
         artist,
         url: objectUrl,
@@ -309,17 +368,95 @@ export default function App() {
     });
   };
 
-  // --- Remove custom track ---
+  // --- Remove custom or preloaded track ---
   const handleRemoveTrack = (id: string) => {
     setPlaylist(prev => {
+      if (prev.length <= 1) {
+        alert("Você precisa manter pelo menos uma música na biblioteca!");
+        return prev;
+      }
       const updated = prev.filter(t => t.id !== id);
       // If deleted track was current track, reset to first track of remaining
       if (currentTrack.id === id) {
-        setCurrentTrack(updated[0] || PRELOADED_TRACKS[0]);
+        setCurrentTrack(updated[0]);
         setIsPlaying(false);
       }
       return updated;
     });
+
+    // Remove track ID from all custom playlists
+    setPlaylists(prev => prev.map(p => ({
+      ...p,
+      trackIds: p.trackIds.filter(trackId => trackId !== id)
+    })));
+
+    // Delete from IndexedDB if it was a local file
+    if (id.startsWith('local-')) {
+      deleteAudioFile(id).catch(err => {
+        console.error('Error deleting local file from IndexedDB:', err);
+      });
+    }
+  };
+
+  // --- Playlist Actions ---
+  const handleCreatePlaylist = (name: string, description?: string) => {
+    const newPlaylist: Playlist = {
+      id: `playlist-${Date.now()}`,
+      name,
+      description: description || 'Minha playlist personalizada',
+      trackIds: []
+    };
+    setPlaylists(prev => [...prev, newPlaylist]);
+    return newPlaylist;
+  };
+
+  const handleDeletePlaylist = (id: string) => {
+    setPlaylists(prev => prev.filter(p => p.id !== id));
+    if (activePlaylistId === id) {
+      setActivePlaylistId(null);
+    }
+  };
+
+  const handleAddTrackToPlaylist = (playlistId: string, trackId: string) => {
+    setPlaylists(prev => prev.map(p => {
+      if (p.id === playlistId) {
+        if (p.trackIds.includes(trackId)) return p;
+        return { ...p, trackIds: [...p.trackIds, trackId] };
+      }
+      return p;
+    }));
+  };
+
+  const handleRemoveTrackFromPlaylist = (playlistId: string, trackId: string) => {
+    setPlaylists(prev => prev.map(p => {
+      if (p.id === playlistId) {
+        return { ...p, trackIds: p.trackIds.filter(id => id !== trackId) };
+      }
+      return p;
+    }));
+  };
+
+  const handleReorderPlaylistTracks = (playlistId: string, trackIds: string[]) => {
+    setPlaylists(prev => prev.map(p => {
+      if (p.id === playlistId) {
+        return { ...p, trackIds };
+      }
+      return p;
+    }));
+  };
+
+  const handleRestoreDefaults = () => {
+    if (window.confirm("Deseja restaurar as músicas de exemplo originais na sua biblioteca?")) {
+      setPlaylist(prev => {
+        const existingIds = new Set(prev.map(t => t.id));
+        const missing = PRELOADED_TRACKS.filter(t => !existingIds.has(t.id));
+        if (missing.length === 0) {
+          alert("Todas as músicas de exemplo já estão na sua biblioteca!");
+          return prev;
+        }
+        return [...prev, ...missing];
+      });
+    }
   };
 
   // --- Toggle Favorites list ---
@@ -329,17 +466,35 @@ export default function App() {
     );
   };
 
+  // --- Update Track Lyrics ---
+  const handleUpdateTrackLyrics = (trackId: string, newLyrics: string[]) => {
+    setPlaylist(prev => {
+      const updated = prev.map(track => {
+        if (track.id === trackId) {
+          return { ...track, lyrics: newLyrics };
+        }
+        return track;
+      });
+      // Also update currentTrack if it's the one edited
+      if (currentTrack.id === trackId) {
+        setCurrentTrack(prevTrack => ({ ...prevTrack, lyrics: newLyrics }));
+      }
+      return updated;
+    });
+  };
+
   // --- Next/Prev skipping Logic ---
   const getFilteredTracksList = () => {
     return playlist.filter((track) => {
-      // Custom Playlist filter
-      if (selectedPlaylistId) {
-        const currentPl = customPlaylists.find(p => p.id === selectedPlaylistId);
-        if (!currentPl || !currentPl.trackIds.includes(track.id)) return false;
+      // Custom playlist filter
+      if (activePlaylistId) {
+        const activePlaylist = playlists.find(p => p.id === activePlaylistId);
+        if (!activePlaylist || !activePlaylist.trackIds.includes(track.id)) {
+          return false;
+        }
       } else {
-        // Genre filter
-        if (selectedGenre === 'Clássica' && track.genre !== 'Clássica') return false;
-        if (selectedGenre === 'Ambient' && track.genre !== 'Ambient') return false;
+        // Genre filter (only when not in a custom playlist)
+        if (selectedGenre === 'Efeitos' && track.genre !== 'Efeitos') return false;
         if (selectedGenre === 'Favoritos' && !favorites.includes(track.id)) return false;
       }
 
@@ -353,46 +508,6 @@ export default function App() {
       }
       return true;
     });
-  };
-
-  const handleGenreSelect = (genre: 'Todos' | 'Clássica' | 'Ambient' | 'Favoritos') => {
-    setSelectedGenre(genre);
-    setSelectedPlaylistId(null);
-  };
-
-  const handleCreatePlaylist = (name: string) => {
-    const newPl: CustomPlaylist = {
-      id: `playlist-${Date.now()}`,
-      name,
-      trackIds: []
-    };
-    setCustomPlaylists(prev => [...prev, newPl]);
-  };
-
-  const handleDeletePlaylist = (id: string) => {
-    setCustomPlaylists(prev => prev.filter(p => p.id !== id));
-    if (selectedPlaylistId === id) {
-      setSelectedPlaylistId(null);
-    }
-  };
-
-  const handleAddTrackToPlaylist = (playlistId: string, trackId: string) => {
-    setCustomPlaylists(prev => prev.map(p => {
-      if (p.id === playlistId) {
-        if (p.trackIds.includes(trackId)) return p;
-        return { ...p, trackIds: [...p.trackIds, trackId] };
-      }
-      return p;
-    }));
-  };
-
-  const handleRemoveTrackFromPlaylist = (playlistId: string, trackId: string) => {
-    setCustomPlaylists(prev => prev.map(p => {
-      if (p.id === playlistId) {
-        return { ...p, trackIds: p.trackIds.filter(id => id !== trackId) };
-      }
-      return p;
-    }));
   };
 
   const skipTrack = (direction: 'next' | 'prev') => {
@@ -615,6 +730,7 @@ export default function App() {
               track={currentTrack}
               isPlaying={isPlaying}
               currentTime={currentTime}
+              onUpdateLyrics={handleUpdateTrackLyrics}
             />
 
             {/* Playback Progress Slider and Action Buttons */}
@@ -671,22 +787,27 @@ export default function App() {
               favorites={favorites}
               onFavoriteToggle={handleFavoriteToggle}
               selectedGenre={selectedGenre}
-              onGenreSelect={handleGenreSelect}
+              onGenreSelect={(genre) => {
+                setActivePlaylistId(null); // Clear custom playlist when a default category is selected
+                setSelectedGenre(genre);
+              }}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
-              onAddCustomTrack={handleAddCustomTrack}
               onAddLocalFile={handleAddLocalFile}
               onRemoveTrack={handleRemoveTrack}
               
-              // Custom Playlists props
-              customPlaylists={customPlaylists}
-              selectedPlaylistId={selectedPlaylistId}
-              onPlaylistSelect={setSelectedPlaylistId}
+              playlists={playlists}
+              activePlaylistId={activePlaylistId}
+              onPlaylistSelect={(id) => {
+                setActivePlaylistId(id);
+              }}
               onCreatePlaylist={handleCreatePlaylist}
               onDeletePlaylist={handleDeletePlaylist}
               onAddTrackToPlaylist={handleAddTrackToPlaylist}
               onRemoveTrackFromPlaylist={handleRemoveTrackFromPlaylist}
-              allPlaylistTracks={playlist}
+              masterTracks={playlist}
+              onReorderPlaylistTracks={handleReorderPlaylistTracks}
+              onRestoreDefaults={handleRestoreDefaults}
             />
           </section>
         </main>
@@ -695,7 +816,7 @@ export default function App() {
         <footer className="text-center py-4 border-t border-slate-900 mt-4 flex flex-col sm:flex-row items-center justify-between text-[10px] text-slate-600 font-medium" id="app-footer">
           <div className="flex items-center gap-1.5 justify-center">
             <Compass className="w-3.5 h-3.5 text-slate-600" />
-            <span>Reprodutor de Música Digital © 2026. Feito com amor e áudio de alta fidelidade.</span>
+            <span>Criado por Jhonatan De Oliveira</span>
           </div>
           <div className="mt-2 sm:mt-0 font-mono text-slate-700">
             AUDIO_API_MODE: HTML5_MEDIA_ELEMENT

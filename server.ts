@@ -1,6 +1,10 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI } from "@google/genai";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 async function startServer() {
   const app = express();
@@ -8,87 +12,80 @@ async function startServer() {
 
   app.use(express.json());
 
-  // API Route to proxy to Cobalt to bypass CORS
-  app.post("/api/proxy-cobalt", async (req, res) => {
+  // Initialize Gemini AI SDK
+  const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
+
+  // API route for translating lyrics
+  app.post("/api/gemini/translate-lyrics", async (req, res) => {
     try {
-      const { url, isAudioOnly, aFormat, audioBitrate } = req.body;
-
-      if (!url) {
-        return res.status(400).json({ status: "error", text: "A URL é obrigatória." });
+      const { lyrics, targetLanguage } = req.body;
+      if (!lyrics || !Array.isArray(lyrics)) {
+        return res.status(400).json({ error: "Lyrics must be provided as an array of strings." });
       }
 
-      console.log(`Proxying request to Cobalt for URL: ${url}`);
+      const prompt = `Translate the following song lyrics to ${targetLanguage || 'Portuguese'}. Keep any timestamp tags like [MM:SS] exactly as they are at the beginning of each line if present. Do not translate the timestamp tags. Return ONLY the translated lines in the same order. Do not add any introductory or explanatory text.
+      
+Lyrics to translate:
+${lyrics.join('\n')}`;
 
-      // We try the official API and alternative working instances of Cobalt (both v10 and v7 endpoints)
-      const cobaltEndpoints = [
-        { url: "https://api.cobalt.tools/", version: 10 },
-        { url: "https://co.wuk.sh/", version: 10 },
-        { url: "https://api.cobalt.tools/api/json", version: 7 },
-        { url: "https://co.wuk.sh/api/json", version: 7 }
-      ];
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+      });
 
-      let lastError: any = null;
-      for (const endpoint of cobaltEndpoints) {
-        try {
-          console.log(`Trying Cobalt endpoint: ${endpoint.url} (version ${endpoint.version})`);
-          
-          const requestBody = endpoint.version === 10 
-            ? {
-                url,
-                downloadMode: "audio",
-                audioFormat: "mp3",
-                audioBitrate: "128"
-              }
-            : {
-                url,
-                isAudioOnly: isAudioOnly ?? true,
-                aFormat: aFormat ?? 'mp3',
-                audioBitrate: audioBitrate ?? '128'
-              };
+      const translatedText = response.text || "";
+      const translatedLines = translatedText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
 
-          const response = await fetch(endpoint.url, {
-            method: 'POST',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            },
-            body: JSON.stringify(requestBody)
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            console.log(`Successfully received response from Cobalt:`, JSON.stringify(data).substring(0, 300));
-            
-            // If the instance returned an error status in the JSON response
-            if (data.status === 'error') {
-              console.warn(`Cobalt endpoint ${endpoint.url} returned JSON error:`, data.text);
-              lastError = new Error(data.text || "Erro retornado pelo servidor Cobalt.");
-              continue;
-            }
-            
-            return res.json(data);
-          } else {
-            const errText = await response.text();
-            console.warn(`Cobalt endpoint ${endpoint.url} failed with status ${response.status}: ${errText}`);
-            
-            try {
-              const errJson = JSON.parse(errText);
-              lastError = new Error(errJson.text || `Status ${response.status}`);
-            } catch {
-              lastError = new Error(`Status ${response.status}: ${errText}`);
-            }
-          }
-        } catch (e: any) {
-          console.warn(`Failed to connect to ${endpoint.url}:`, e.message);
-          lastError = e;
-        }
-      }
-
-      throw lastError || new Error("Todos os servidores de processamento estão ocupados ou indisponíveis no momento.");
+      res.json({ translatedLyrics: translatedLines });
     } catch (error: any) {
-      console.error("Error in /api/proxy-cobalt:", error);
-      res.status(500).json({ status: "error", text: error.message || "Erro interno ao processar a conversão." });
+      console.error("Gemini Translation Error:", error);
+      res.status(500).json({ error: error.message || "Failed to translate lyrics using Gemini API." });
+    }
+  });
+
+  // API route for generating time-synced lyrics using Gemini
+  app.post("/api/gemini/generate-lyrics", async (req, res) => {
+    try {
+      const { title, artist, duration } = req.body;
+      if (!title) {
+        return res.status(400).json({ error: "Title must be provided." });
+      }
+
+      const prompt = `You are a music lyrics expert. Search or generate the real or highly appropriate lyrics for the song "${title}" by "${artist || 'Unknown Artist'}".
+Generate the lyrics with estimated, synchronized time tags like [MM:SS] at the beginning of each line, based on typical song progression and the track duration which is ${duration || '05:00'}.
+Ensure the timing spreads evenly from [00:00] until near the end of the song.
+Return ONLY the formatted lyric lines (one per line). Do NOT include any markdown formatting, markdown code blocks (e.g. \`\`\`), introduction, or explanations. Start immediately with the first lyric line.
+
+Example format:
+[00:00] (Instrumental - Intro)
+[00:15] Lyrics of the song...
+[00:30] More lyrics...`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+      });
+
+      const text = response.text || "";
+      const lines = text
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
+
+      res.json({ lyrics: lines });
+    } catch (error: any) {
+      console.error("Gemini Generate Lyrics Error:", error);
+      res.status(500).json({ error: error.message || "Failed to generate lyrics using Gemini API." });
     }
   });
 
