@@ -11,6 +11,12 @@ export interface Track {
   lyrics?: string[];
 }
 
+export interface CustomPlaylist {
+  id: string;
+  name: string;
+  trackIds: string[];
+}
+
 export type EqualizerPreset = 'flat' | 'bass' | 'vocal' | 'classic' | 'chill';
 
 export interface SleepTimerConfig {

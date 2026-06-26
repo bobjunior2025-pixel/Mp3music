@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Track, EqualizerPreset, SleepTimerConfig } from './types';
+import { Track, EqualizerPreset, SleepTimerConfig, CustomPlaylist } from './types';
 import { PRELOADED_TRACKS } from './data';
 import Visualizer from './components/Visualizer';
 import SleepTimer from './components/SleepTimer';
@@ -85,6 +85,13 @@ export default function App() {
   const [selectedGenre, setSelectedGenre] = useState<'Todos' | 'Clássica' | 'Ambient' | 'Favoritos'>('Todos');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // --- Custom Playlists ---
+  const [customPlaylists, setCustomPlaylists] = useState<CustomPlaylist[]>(() => {
+    const saved = localStorage.getItem('reprodutor_custom_playlists');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+
   // --- Equalizer Preset ---
   const [equalizerPreset, setEqualizerPreset] = useState<EqualizerPreset>('flat');
 
@@ -110,6 +117,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('reprodutor_current_track_id', currentTrack.id);
   }, [currentTrack]);
+
+  useEffect(() => {
+    localStorage.setItem('reprodutor_custom_playlists', JSON.stringify(customPlaylists));
+  }, [customPlaylists]);
 
   useEffect(() => {
     localStorage.setItem('reprodutor_volume', volume.toString());
@@ -321,10 +332,16 @@ export default function App() {
   // --- Next/Prev skipping Logic ---
   const getFilteredTracksList = () => {
     return playlist.filter((track) => {
-      // Genre filter
-      if (selectedGenre === 'Clássica' && track.genre !== 'Clássica') return false;
-      if (selectedGenre === 'Ambient' && track.genre !== 'Ambient') return false;
-      if (selectedGenre === 'Favoritos' && !favorites.includes(track.id)) return false;
+      // Custom Playlist filter
+      if (selectedPlaylistId) {
+        const currentPl = customPlaylists.find(p => p.id === selectedPlaylistId);
+        if (!currentPl || !currentPl.trackIds.includes(track.id)) return false;
+      } else {
+        // Genre filter
+        if (selectedGenre === 'Clássica' && track.genre !== 'Clássica') return false;
+        if (selectedGenre === 'Ambient' && track.genre !== 'Ambient') return false;
+        if (selectedGenre === 'Favoritos' && !favorites.includes(track.id)) return false;
+      }
 
       // Search match
       const query = searchQuery.toLowerCase().trim();
@@ -336,6 +353,46 @@ export default function App() {
       }
       return true;
     });
+  };
+
+  const handleGenreSelect = (genre: 'Todos' | 'Clássica' | 'Ambient' | 'Favoritos') => {
+    setSelectedGenre(genre);
+    setSelectedPlaylistId(null);
+  };
+
+  const handleCreatePlaylist = (name: string) => {
+    const newPl: CustomPlaylist = {
+      id: `playlist-${Date.now()}`,
+      name,
+      trackIds: []
+    };
+    setCustomPlaylists(prev => [...prev, newPl]);
+  };
+
+  const handleDeletePlaylist = (id: string) => {
+    setCustomPlaylists(prev => prev.filter(p => p.id !== id));
+    if (selectedPlaylistId === id) {
+      setSelectedPlaylistId(null);
+    }
+  };
+
+  const handleAddTrackToPlaylist = (playlistId: string, trackId: string) => {
+    setCustomPlaylists(prev => prev.map(p => {
+      if (p.id === playlistId) {
+        if (p.trackIds.includes(trackId)) return p;
+        return { ...p, trackIds: [...p.trackIds, trackId] };
+      }
+      return p;
+    }));
+  };
+
+  const handleRemoveTrackFromPlaylist = (playlistId: string, trackId: string) => {
+    setCustomPlaylists(prev => prev.map(p => {
+      if (p.id === playlistId) {
+        return { ...p, trackIds: p.trackIds.filter(id => id !== trackId) };
+      }
+      return p;
+    }));
   };
 
   const skipTrack = (direction: 'next' | 'prev') => {
@@ -614,12 +671,22 @@ export default function App() {
               favorites={favorites}
               onFavoriteToggle={handleFavoriteToggle}
               selectedGenre={selectedGenre}
-              onGenreSelect={setSelectedGenre}
+              onGenreSelect={handleGenreSelect}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
               onAddCustomTrack={handleAddCustomTrack}
               onAddLocalFile={handleAddLocalFile}
               onRemoveTrack={handleRemoveTrack}
+              
+              // Custom Playlists props
+              customPlaylists={customPlaylists}
+              selectedPlaylistId={selectedPlaylistId}
+              onPlaylistSelect={setSelectedPlaylistId}
+              onCreatePlaylist={handleCreatePlaylist}
+              onDeletePlaylist={handleDeletePlaylist}
+              onAddTrackToPlaylist={handleAddTrackToPlaylist}
+              onRemoveTrackFromPlaylist={handleRemoveTrackFromPlaylist}
+              allPlaylistTracks={playlist}
             />
           </section>
         </main>
