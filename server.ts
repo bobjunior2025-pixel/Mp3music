@@ -12,15 +12,25 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Initialize Gemini AI SDK
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
+  // Initialize Gemini AI SDK lazily and safely
+  let aiInstance: GoogleGenAI | null = null;
+  function getAI() {
+    if (!aiInstance) {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY não encontrada nas configurações do aplicativo. Por favor, configure-a no painel de configurações para usar os recursos de Inteligência Artificial.");
       }
+      aiInstance = new GoogleGenAI({
+        apiKey: apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
     }
-  });
+    return aiInstance;
+  }
 
   // API route for translating lyrics
   app.post("/api/gemini/translate-lyrics", async (req, res) => {
@@ -29,6 +39,8 @@ async function startServer() {
       if (!lyrics || !Array.isArray(lyrics)) {
         return res.status(400).json({ error: "Lyrics must be provided as an array of strings." });
       }
+
+      const ai = getAI();
 
       const prompt = `Translate the following song lyrics to ${targetLanguage || 'Portuguese'}. Keep any timestamp tags like [MM:SS] exactly as they are at the beginning of each line if present. Do not translate the timestamp tags. Return ONLY the translated lines in the same order. Do not add any introductory or explanatory text.
       
@@ -60,6 +72,8 @@ ${lyrics.join('\n')}`;
       if (!title) {
         return res.status(400).json({ error: "Title must be provided." });
       }
+
+      const ai = getAI();
 
       const prompt = `You are a music lyrics expert. Search or generate the real or highly appropriate lyrics for the song "${title}" by "${artist || 'Unknown Artist'}".
 Generate the lyrics with estimated, synchronized time tags like [MM:SS] at the beginning of each line, based on typical song progression and the track duration which is ${duration || '05:00'}.

@@ -16,7 +16,7 @@ export default function CurrentTrackDetail({
   currentTime, 
   onUpdateLyrics 
 }: CurrentTrackDetailProps) {
-  const [tab, setTab] = useState<'info' | 'lyrics'>('info');
+  const [tab, setTab] = useState<'info' | 'lyrics'>('lyrics');
   const [isEditing, setIsEditing] = useState(false);
   const [editedLyricsText, setEditedLyricsText] = useState('');
   const [isTranslating, setIsTranslating] = useState(false);
@@ -98,8 +98,14 @@ export default function CurrentTrackDetail({
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erro ao gerar letra com IA.');
+        let errorMsg = 'Erro ao gerar letra com IA.';
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.error || errorMsg;
+        } catch {
+          errorMsg = `Erro do Servidor (${response.status}): Não foi possível obter uma resposta JSON. Verifique se a chave GEMINI_API_KEY está configurada corretamente nas configurações do projeto.`;
+        }
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();
@@ -147,8 +153,14 @@ export default function CurrentTrackDetail({
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erro na tradução com IA. Verifique se o servidor está ativo.');
+        let errorMsg = 'Erro na tradução com IA.';
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.error || errorMsg;
+        } catch {
+          errorMsg = `Erro do Servidor (${response.status}): Não foi possível obter uma resposta JSON. Verifique se a chave GEMINI_API_KEY está configurada de forma correta.`;
+        }
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();
@@ -252,18 +264,6 @@ export default function CurrentTrackDetail({
           </div>
 
           <div className="flex bg-slate-950/60 p-0.5 rounded-lg border border-slate-800/80 shrink-0 items-center">
-            <button
-              id="tab-detail-info"
-              onClick={() => { setTab('info'); setIsEditing(false); }}
-              className={`p-1 px-2.5 rounded-md text-[10px] font-semibold flex items-center gap-1 transition-all cursor-pointer ${
-                tab === 'info'
-                  ? 'bg-slate-800 text-slate-100 shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Info className="w-3 h-3" />
-              Info
-            </button>
             <button
               id="tab-detail-lyrics"
               onClick={() => setTab('lyrics')}
