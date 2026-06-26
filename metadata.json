@@ -1,0 +1,6 @@
+{
+  "name": "Reprodutor de Música",
+  "description": "Um reprodutor de música elegante com controle de reprodução, lista de faixas clássicas de alta qualidade, equalizador visualizador e temporizador.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
